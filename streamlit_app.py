@@ -40,7 +40,7 @@ def save_attendance(d):
     json.dump(d, open(ATTEND_FILE,"w"), indent=2)
 
 def mark_attendance(roll):
-    roll = roll.strip()
+    roll = str(roll).strip()
     students = load_students()
     if roll not in students:
         return False, f"❌ Roll No '{roll}' not found!"
@@ -262,6 +262,8 @@ function toggle(){{on?stop():start()}}
 """, height=520)
 
         # ── Python receives the scanned roll and marks attendance ─────────────
+        if result is not None:
+            result = str(result).strip()
         if result and result != st.session_state.last_marked:
             st.session_state.last_marked = result
             ok, msg = mark_attendance(result)
