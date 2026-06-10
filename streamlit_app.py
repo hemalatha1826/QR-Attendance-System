@@ -60,18 +60,6 @@ def make_qr(roll):
     img = qr.make_image(fill_color="black", back_color="white")
     buf = BytesIO(); img.save(buf,"PNG"); return buf.getvalue()
 
-# AUTO MARK from query param
-params = st.query_params
-scanned = params.get("scanned", "")
-nav_page = params.get("page", "")
-
-if scanned:
-    ok, msg = mark_attendance(scanned)
-    st.session_state["scan_result"] = {"ok": ok, "msg": msg}
-    st.query_params.clear()
-    st.query_params["page"] = "scanner"
-    st.rerun()
-
 # Sidebar
 with st.sidebar:
     st.markdown("""
@@ -82,13 +70,10 @@ with st.sidebar:
     </div>
     <hr style='border-color:#2d4070;margin:.5rem 0 1.5rem'>
     """, unsafe_allow_html=True)
-
-    default_idx = 2 if nav_page == "scanner" else 0
     page = st.radio("Nav", [
         "➕ Add Student","👥 Students List","📷 QR Scanner",
         "📊 Today Summary","📋 Attendance Report"
-    ], label_visibility="collapsed", index=default_idx)
-
+    ], label_visibility="collapsed")
     st.markdown(f"<div style='text-align:center;color:#8aa0cc;font-size:.8rem;margin-top:2rem'>📅 {date.today()}</div>", unsafe_allow_html=True)
 
 # ── Add Student ────────────────────────────────────────────────────────────────
@@ -99,7 +84,7 @@ if page == "➕ Add Student":
     with c1:
         st.subheader("Student Details")
         roll = st.text_input("Roll Number", placeholder="e.g. BCA1")
-        name = st.text_input("Full Name",   placeholder="e.g. Hema Priya")
+        name = st.text_input("Full Name", placeholder="e.g. Hema Priya")
         dept = st.selectbox("Department", ["BCA","BBA","Computer Science","Mathematics",
                                             "Physics","Chemistry","Commerce","English","History","Economics"])
         year = st.selectbox("Year", ["1st Year","2nd Year","3rd Year"])
@@ -150,78 +135,120 @@ elif page == "📷 QR Scanner":
     st.title("📷 QR Scanner")
     st.markdown("---")
 
-    if "scan_result" in st.session_state:
-        res = st.session_state.pop("scan_result")
-        if res["ok"]: st.success(f"🎉 AUTO-MARKED! {res['msg']}"); st.balloons()
-        else: st.error(res["msg"])
-
     if "scanner_locked" not in st.session_state:
         st.session_state.scanner_locked = False
     if st.button("🔓 Unlock Scanner" if st.session_state.scanner_locked else "🔒 Lock Scanner"):
-        st.session_state.scanner_locked = not st.session_state.scanner_locked; st.rerun()
+        st.session_state.scanner_locked = not st.session_state.scanner_locked
+        st.rerun()
 
     if st.session_state.scanner_locked:
         st.warning("🔒 Scanner is locked.")
     else:
-        st.info("📸 QR scan பண்ணினா உடனே Present mark ஆகும்!")
+        st.info("📸 QR scan பண்ணினா Roll No auto-fill ஆகும் — Mark Present click பண்ணுங்க!")
 
-        components.html("""
+        # ── Scanner + auto-fill using Streamlit's websocket via postMessage ──
+        # The scanner detects QR → stores in sessionStorage → Streamlit polls it
+        scanned_roll = components.html("""
 <!DOCTYPE html><html><head>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:#1a2a4a;font-family:Arial,sans-serif;color:#e0e8ff;padding:1rem}
 #reader{max-width:360px;margin:0 auto;border-radius:10px;overflow:hidden}
-#status{margin-top:.8rem;padding:.8rem;border-radius:8px;background:#243560;color:#8aa0cc;text-align:center;font-size:.95rem}
+#status{margin:.8rem 0;padding:.8rem;border-radius:8px;background:#243560;color:#8aa0cc;text-align:center}
 #status.ok{background:#1a3a2a;color:#2ecc71;border-left:4px solid #2ecc71}
 #status.scan{background:#1a2040;color:#f0c040;border-left:4px solid #f0c040}
-#status.err{background:#3a1a1a;color:#e74c3c;border-left:4px solid #e74c3c}
-.btn{display:block;margin:.8rem auto 0;padding:.6rem 2rem;background:linear-gradient(135deg,#2d5af0,#1a3acc);color:#fff;border:none;border-radius:8px;font-size:1rem;cursor:pointer;font-weight:600}
-#log{margin-top:.8rem}
-.li{background:#1a3a2a;border-radius:6px;padding:.4rem .8rem;margin:.2rem 0;color:#2ecc71;font-size:.85rem}
+#roll-display{background:#243560;border-radius:8px;padding:.8rem;margin:.5rem 0;text-align:center;font-size:1.2rem;font-weight:700;color:#f0c040;display:none}
+.btn{display:inline-block;margin:.4rem;padding:.5rem 1.5rem;background:linear-gradient(135deg,#2d5af0,#1a3acc);color:#fff;border:none;border-radius:8px;font-size:.95rem;cursor:pointer;font-weight:600}
+.btn.green{background:linear-gradient(135deg,#27ae60,#1e8449)}
+#log{margin-top:.5rem}
+.li{background:#1a3a2a;border-radius:6px;padding:.3rem .8rem;margin:.2rem 0;color:#2ecc71;font-size:.85rem}
 </style></head><body>
 <div id="reader"></div>
 <div id="status" class="scan">📷 Camera starting...</div>
-<button class="btn" id="btn" onclick="toggle()">⏹ Stop</button>
+<div id="roll-display"></div>
+<div style="text-align:center">
+  <button class="btn" id="stop-btn" onclick="toggle()">⏹ Stop</button>
+</div>
 <div id="log"></div>
 <script>
 let qr=null,on=false,last="",lastT=0,log=[];
 const setS=(m,c)=>{const e=document.getElementById("status");e.className=c||"";e.innerText=m};
-const addLog=r=>{log.unshift(r);if(log.length>5)log.pop();document.getElementById("log").innerHTML="<div style='color:#8aa0cc;font-size:.8rem;margin-bottom:.3rem'>Scanned:</div>"+log.map(x=>`<div class='li'>✅ ${x}</div>`).join("")};
+
 function onScan(text){
   const now=Date.now();
-  if(text===last&&now-lastT<5000)return;
+  if(text===last&&now-lastT<4000)return;
   last=text;lastT=now;
   const roll=text.trim();
-  setS("⏳ Marking: "+roll+"...","scan");
-  addLog(roll);
-  try{
-    const base=window.top.location.href.split('?')[0].split('#')[0];
-    window.top.location.replace(base+"?scanned="+encodeURIComponent(roll));
-  }catch(e){setS("⚠️ Manual box use பண்ணுங்க: "+roll,"err");}
+  
+  // Show scanned roll prominently
+  const rd=document.getElementById("roll-display");
+  rd.style.display="block";
+  rd.innerText="📋 Scanned: "+roll;
+  setS("✅ Scanned: "+roll+" — Click Mark Present below","ok");
+  
+  // Add to log
+  log.unshift(roll);
+  if(log.length>5)log.pop();
+  document.getElementById("log").innerHTML=
+    "<div style='color:#8aa0cc;font-size:.8rem;margin:.4rem 0'>Recent scans:</div>"+
+    log.map(x=>`<div class='li'>✅ ${x}</div>`).join("");
+  
+  // Send to Streamlit via postMessage (Streamlit component protocol)
+  window.parent.postMessage({
+    isStreamlitMessage: true,
+    type: "streamlit:componentValue", 
+    value: roll
+  }, "*");
 }
+
 function start(){
   qr=new Html5Qrcode("reader");
   qr.start({facingMode:"environment"},{fps:10,qrbox:{width:230,height:230}},onScan,()=>{})
-  .then(()=>{setS("✅ Camera On — QR காட்டுங்க","scan");document.getElementById("btn").innerText="⏹ Stop";on=true})
-  .catch(e=>{setS("❌ Camera: "+e,"err")})
+  .then(()=>{setS("✅ Camera On — QR காட்டுங்க","scan");document.getElementById("stop-btn").innerText="⏹ Stop";on=true})
+  .catch(e=>{setS("❌ Camera error: "+e,"")})
 }
-function stop(){qr&&qr.stop().then(()=>{setS("📷 Stopped","err");document.getElementById("btn").innerText="▶ Start";on=false})}
+function stop(){
+  qr&&qr.stop().then(()=>{
+    setS("📷 Camera stopped","");
+    document.getElementById("stop-btn").innerText="▶ Start";on=false;
+  })
+}
 function toggle(){on?stop():start()}
 start();
 </script></body></html>
-""", height=480)
+""", height=520)
 
+        # ── Mark attendance form ───────────────────────────────────────────────
         st.markdown("---")
-        st.markdown("**✏️ Manual Mark**")
-        with st.form("qf", clear_on_submit=True):
-            ri = st.text_input("Roll Number", placeholder="e.g. BCA1")
-            if st.form_submit_button("✅ Mark Present", use_container_width=True):
-                if ri:
-                    ok,msg=mark_attendance(ri.strip())
-                    if ok: st.success(msg); st.balloons()
-                    else: st.error(msg)
 
+        # Initialize session roll
+        if "current_roll" not in st.session_state:
+            st.session_state.current_roll = ""
+
+        col1, col2 = st.columns([3,1])
+        with col1:
+            roll_input = st.text_input(
+                "Roll Number",
+                value=st.session_state.current_roll,
+                placeholder="QR scan பண்ணினா இங்க வரும் — or type manually",
+                key="roll_box"
+            )
+        with col2:
+            st.markdown("<br>", unsafe_allow_html=True)
+            mark_btn = st.button("✅ Mark Present", use_container_width=True)
+
+        if mark_btn and roll_input:
+            ok, msg = mark_attendance(roll_input.strip())
+            if ok:
+                st.success(f"🎉 {msg}")
+                st.session_state.current_roll = ""
+                st.balloons()
+                st.rerun()
+            else:
+                st.error(msg)
+
+    # Today's list
     today_att = load_attendance().get(str(date.today()), {})
     if today_att:
         st.markdown("---")
