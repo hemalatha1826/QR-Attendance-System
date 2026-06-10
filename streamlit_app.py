@@ -60,6 +60,12 @@ def make_qr(roll):
     img = qr.make_image(fill_color="black", back_color="white")
     buf = BytesIO(); img.save(buf,"PNG"); return buf.getvalue()
 
+# ── Handle scanned value from component ───────────────────────────────────────
+if "scanned_roll" not in st.session_state:
+    st.session_state.scanned_roll = ""
+if "last_marked" not in st.session_state:
+    st.session_state.last_marked = ""
+
 # Sidebar
 with st.sidebar:
     st.markdown("""
@@ -144,111 +150,139 @@ elif page == "📷 QR Scanner":
     if st.session_state.scanner_locked:
         st.warning("🔒 Scanner is locked.")
     else:
-        st.info("📸 QR scan பண்ணினா Roll No auto-fill ஆகும் — Mark Present click பண்ணுங்க!")
+        st.info("📸 QR scan பண்ணினா **உடனே** Present mark ஆகும்! No click needed!")
 
-        # ── Scanner + auto-fill using Streamlit's websocket via postMessage ──
-        # The scanner detects QR → stores in sessionStorage → Streamlit polls it
-        scanned_roll = components.html("""
+        # Build student list as JS object for direct marking inside iframe
+        students_json = json.dumps(load_students())
+        today_str = str(date.today())
+        attendance_json = json.dumps(load_attendance().get(today_str, {}))
+
+        result = components.html(f"""
 <!DOCTYPE html><html><head>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
 <style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{background:#1a2a4a;font-family:Arial,sans-serif;color:#e0e8ff;padding:1rem}
-#reader{max-width:360px;margin:0 auto;border-radius:10px;overflow:hidden}
-#status{margin:.8rem 0;padding:.8rem;border-radius:8px;background:#243560;color:#8aa0cc;text-align:center}
-#status.ok{background:#1a3a2a;color:#2ecc71;border-left:4px solid #2ecc71}
-#status.scan{background:#1a2040;color:#f0c040;border-left:4px solid #f0c040}
-#roll-display{background:#243560;border-radius:8px;padding:.8rem;margin:.5rem 0;text-align:center;font-size:1.2rem;font-weight:700;color:#f0c040;display:none}
-.btn{display:inline-block;margin:.4rem;padding:.5rem 1.5rem;background:linear-gradient(135deg,#2d5af0,#1a3acc);color:#fff;border:none;border-radius:8px;font-size:.95rem;cursor:pointer;font-weight:600}
-.btn.green{background:linear-gradient(135deg,#27ae60,#1e8449)}
-#log{margin-top:.5rem}
-.li{background:#1a3a2a;border-radius:6px;padding:.3rem .8rem;margin:.2rem 0;color:#2ecc71;font-size:.85rem}
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{background:#1a2a4a;font-family:Arial,sans-serif;color:#e0e8ff;padding:1rem}}
+#reader{{max-width:360px;margin:0 auto;border-radius:10px;overflow:hidden}}
+#status{{margin:.8rem 0;padding:.8rem;border-radius:8px;background:#243560;color:#8aa0cc;text-align:center;font-size:1rem}}
+#status.ok{{background:#1a3a2a;color:#2ecc71;border-left:4px solid #2ecc71;font-weight:700;font-size:1.1rem}}
+#status.warn{{background:#3a3a1a;color:#f0c040;border-left:4px solid #f0c040}}
+#status.err{{background:#3a1a1a;color:#e74c3c;border-left:4px solid #e74c3c}}
+#status.scan{{background:#1a2040;color:#f0c040;border-left:4px solid #2d5af0}}
+.btn{{display:inline-block;margin:.4rem;padding:.5rem 1.5rem;background:linear-gradient(135deg,#2d5af0,#1a3acc);color:#fff;border:none;border-radius:8px;font-size:.95rem;cursor:pointer;font-weight:600}}
+#log{{margin-top:.5rem}}
+.li{{background:#1a3a2a;border-radius:6px;padding:.3rem .8rem;margin:.2rem 0;color:#2ecc71;font-size:.85rem}}
+.li.dup{{background:#3a3a1a;color:#f0c040}}
 </style></head><body>
 <div id="reader"></div>
 <div id="status" class="scan">📷 Camera starting...</div>
-<div id="roll-display"></div>
-<div style="text-align:center">
+<div style="text-align:center;margin-top:.5rem">
   <button class="btn" id="stop-btn" onclick="toggle()">⏹ Stop</button>
 </div>
 <div id="log"></div>
 <script>
-let qr=null,on=false,last="",lastT=0,log=[];
-const setS=(m,c)=>{const e=document.getElementById("status");e.className=c||"";e.innerText=m};
+// Student data loaded directly - no server call needed!
+const students = {students_json};
+const alreadyMarked = {attendance_json};
+const markedThisSession = {{}};
 
-function onScan(text){
-  const now=Date.now();
-  if(text===last&&now-lastT<4000)return;
-  last=text;lastT=now;
-  const roll=text.trim();
-  
-  // Show scanned roll prominently
-  const rd=document.getElementById("roll-display");
-  rd.style.display="block";
-  rd.innerText="📋 Scanned: "+roll;
-  setS("✅ Scanned: "+roll+" — Click Mark Present below","ok");
-  
-  // Add to log
-  log.unshift(roll);
-  if(log.length>5)log.pop();
+let qr=null, on=false, last="", lastT=0, log=[];
+
+const setS=(m,c)=>{{
+  const e=document.getElementById("status");
+  e.className=c||""; e.innerText=m;
+}};
+
+function addLog(roll, type){{
+  log.unshift({{roll, type}});
+  if(log.length>6) log.pop();
   document.getElementById("log").innerHTML=
-    "<div style='color:#8aa0cc;font-size:.8rem;margin:.4rem 0'>Recent scans:</div>"+
-    log.map(x=>`<div class='li'>✅ ${x}</div>`).join("");
-  
-  // Send to Streamlit via postMessage (Streamlit component protocol)
-  window.parent.postMessage({
-    isStreamlitMessage: true,
-    type: "streamlit:componentValue", 
-    value: roll
-  }, "*");
-}
+    "<div style='color:#8aa0cc;font-size:.8rem;margin:.4rem 0'>📋 Session log:</div>"+
+    log.map(x=>`<div class='li ${{x.type}}'>${{x.type==='ok'?'✅':'⚠️'}} ${{x.roll}}</div>`).join("");
+}}
 
-function start(){
-  qr=new Html5Qrcode("reader");
-  qr.start({facingMode:"environment"},{fps:10,qrbox:{width:230,height:230}},onScan,()=>{})
-  .then(()=>{setS("✅ Camera On — QR காட்டுங்க","scan");document.getElementById("stop-btn").innerText="⏹ Stop";on=true})
-  .catch(e=>{setS("❌ Camera error: "+e,"")})
-}
-function stop(){
-  qr&&qr.stop().then(()=>{
+function onScan(text){{
+  const now = Date.now();
+  if(text===last && now-lastT<4000) return;
+  last=text; lastT=now;
+  const roll = text.trim();
+
+  // Check if student exists
+  if(!students[roll]){{
+    setS("❌ Roll No '"+roll+"' not found!","err");
+    addLog(roll, "err");
+    return;
+  }}
+
+  // Check if already marked today
+  if(alreadyMarked[roll] || markedThisSession[roll]){{
+    setS("⚠️ Already marked: "+students[roll].name,"warn");
+    addLog(roll, "dup");
+    return;
+  }}
+
+  // Mark in session
+  markedThisSession[roll] = true;
+  alreadyMarked[roll] = true;
+  const name = students[roll].name;
+
+  setS("🎉 MARKED PRESENT: "+name+" ("+roll+")","ok");
+  addLog(roll, "ok");
+
+  // Send to Streamlit Python via component value
+  Streamlit.setComponentValue(roll);
+}}
+
+function start(){{
+  qr = new Html5Qrcode("reader");
+  qr.start({{facingMode:"environment"}}, {{fps:10, qrbox:{{width:230,height:230}}}}, onScan, ()=>{{}})
+  .then(()=>{{
+    setS("✅ Camera On — QR காட்டுங்க","scan");
+    document.getElementById("stop-btn").innerText="⏹ Stop";
+    on=true;
+  }})
+  .catch(e=>{{setS("❌ Camera: "+e,"err")}})
+}}
+function stop(){{
+  qr&&qr.stop().then(()=>{{
     setS("📷 Camera stopped","");
-    document.getElementById("stop-btn").innerText="▶ Start";on=false;
-  })
-}
-function toggle(){on?stop():start()}
-start();
-</script></body></html>
+    document.getElementById("stop-btn").innerText="▶ Start";
+    on=false;
+  }})
+}}
+function toggle(){{on?stop():start()}}
+</script>
+<script src="https://unpkg.com/streamlit-component-lib/dist/index.js"></script>
+<script>
+  // Initialize Streamlit component
+  Streamlit.setFrameHeight(document.body.scrollHeight);
+  start();
+</script>
+</body></html>
 """, height=520)
 
-        # ── Mark attendance form ───────────────────────────────────────────────
-        st.markdown("---")
-
-        # Initialize session roll
-        if "current_roll" not in st.session_state:
-            st.session_state.current_roll = ""
-
-        col1, col2 = st.columns([3,1])
-        with col1:
-            roll_input = st.text_input(
-                "Roll Number",
-                value=st.session_state.current_roll,
-                placeholder="QR scan பண்ணினா இங்க வரும் — or type manually",
-                key="roll_box"
-            )
-        with col2:
-            st.markdown("<br>", unsafe_allow_html=True)
-            mark_btn = st.button("✅ Mark Present", use_container_width=True)
-
-        if mark_btn and roll_input:
-            ok, msg = mark_attendance(roll_input.strip())
+        # ── Python receives the scanned roll and marks attendance ─────────────
+        if result and result != st.session_state.last_marked:
+            st.session_state.last_marked = result
+            ok, msg = mark_attendance(result)
             if ok:
-                st.success(f"🎉 {msg}")
-                st.session_state.current_roll = ""
+                st.success(f"🎉 AUTO-MARKED! {msg}")
                 st.balloons()
-                st.rerun()
             else:
                 st.error(msg)
 
-    # Today's list
+        # Manual fallback
+        st.markdown("---")
+        st.caption("Manual mark (backup):")
+        with st.form("mf2", clear_on_submit=True):
+            ri = st.text_input("Roll Number", placeholder="e.g. BCA1")
+            if st.form_submit_button("✅ Mark Present"):
+                if ri:
+                    ok,msg=mark_attendance(ri.strip())
+                    if ok: st.success(msg); st.balloons()
+                    else: st.error(msg)
+
+    # Today list
     today_att = load_attendance().get(str(date.today()), {})
     if today_att:
         st.markdown("---")
