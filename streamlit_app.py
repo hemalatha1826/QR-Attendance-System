@@ -240,24 +240,31 @@ function onScan(text){{
       if(visible.length) target=visible[visible.length-1];
     }}
     if(target){{
-      // Set value using React's native setter
       const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
       setter.call(target,roll);
       target.dispatchEvent(new Event('input',{{bubbles:true}}));
       target.dispatchEvent(new Event('change',{{bubbles:true}}));
-      // Find and click Mark Present button
+      target.focus();
+      // Enter key — triggers Streamlit form submit
       setTimeout(()=>{{
-        const btns=pdoc.querySelectorAll('button');
-        for(let b of btns){{
-          if(b.innerText&&(b.innerText.includes('Mark')||b.innerText.includes('Present'))){{
-            b.click(); break;
-          }}
+        ['keydown','keypress','keyup'].forEach(evt=>{{
+          target.dispatchEvent(new KeyboardEvent(evt,{{key:'Enter',keyCode:13,which:13,bubbles:true}}));
+        }});
+      }},300);
+      // Also try clicking the button directly
+      setTimeout(()=>{{
+        const allBtns=Array.from(pdoc.querySelectorAll('button'));
+        for(let b of allBtns){{
+          const t=(b.innerText||b.textContent||'').toLowerCase();
+          if(t.includes('mark')||t.includes('present')){{b.click();break;}}
         }}
-      }},400);
+        // Streamlit form submit button
+        const fb=pdoc.querySelector('[data-testid="stFormSubmitButton"] button,button[kind="primaryFormSubmit"]');
+        if(fb) fb.click();
+      }},500);
     }}
   }}catch(e){{
-    // Cross-origin: show roll prominently for manual entry
-    setS("📋 Scan OK: "+roll+" — Click Mark Present","ok");
+    setS("📋 "+roll+" — Click Mark Present below","ok");
   }}
 }}
 
@@ -276,17 +283,14 @@ start();
 """, height=500)
 
         st.markdown("---")
-        # The roll input that JS fills automatically
-        roll_val = st.text_input(
-            "Roll Number",
-            placeholder="Scan QR — இங்க auto fill ஆகும்",
-            key="qr_roll_auto"
-        )
-        col1, col2 = st.columns([3,1])
-        with col2:
-            mark_btn = st.button("✅ Mark Present", use_container_width=True, key="mark_btn")
-        with col1:
-            st.caption("Scan ஆனதும் auto-fill + auto-click ஆகும். Manual-ஆவும் type பண்ணலாம்.")
+        # Use st.form so Enter key press submits automatically
+        with st.form("scanner_form", clear_on_submit=True):
+            roll_val = st.text_input(
+                "Roll Number",
+                placeholder="Scan QR — இங்க auto fill ஆகும்",
+                key="qr_roll_auto"
+            )
+            mark_btn = st.form_submit_button("✅ Mark Present", use_container_width=True)
 
         if mark_btn and roll_val:
             roll_clean = str(roll_val).strip()
